@@ -1,0 +1,114 @@
+version: '3.8'
+
+
+# Defines the shared network for all services to communicate
+networks:
+ observability-net:
+   driver: bridge
+
+
+services:
+ app:
+   build:
+     context: .
+     dockerfile: Dockerfile.app
+   ports:
+     - "5001:5001"
+   environment:
+     - PROMETHEUS_URL=http://prometheus:9090
+     - LOKI_URL=http://loki:3100
+     - OLLAMA_URL=http://ollama:11434
+   networks:
+     - observability-net
+   depends_on:
+     ollama:
+       condition: service_healthy
+     prometheus:
+       condition: service_started
+     loki:
+       condition: service_started
+
+
+ # The LLM Server (Ollama)
+ ollama:
+   image: ollama/ollama:latest
+   entrypoint: >
+     /bin/sh -c "
+       echo 'Starting Ollama service...' &&
+       ollama serve &
+       PID=$! &&
+       echo 'Ollama service started with PID $PID.' &&
+       sleep 5 &&
+       echo 'Pulling llama3 model...' &&
+       ollama pull llama3 &&
+       echo 'Model pull complete. Waiting for service to be ready...' &&
+       wait $PID
+     "
+   ports:
+     - "11434:11434"
+   volumes:
+     - ollama_data:/root/.ollama
+   container_name: ollama
+   networks:
+     - observability-net
+   healthcheck:
+     test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+     interval: 15s
+     timeout: 10s
+     retries: 15
+
+
+ # Prometheus for Metrics
+ prometheus:
+   image: prom/prometheus:v2.47.0
+   container_name: prometheus
+   command:
+     - '--config.file=/etc/prometheus/prometheus.yml'
+   ports:
+     - "9090:9090"
+   volumes:
+     - ./prometheus.yml:/etc/prometheus/prometheus.yml
+   networks:
+     - observability-net
+
+
+ # Loki for Logs
+ loki:
+   image: grafana/loki:2.9.0
+   container_name: loki
+   command: -config.file=/etc/loki/local-config.yaml
+   ports:
+     - "3100:3100"
+   networks:
+     - observability-net
+
+
+ # Fluent Bit for Log Collection from the demo-app
+ fluent-bit:
+   image: fluent/fluent-bit:2.1.7
+   container_name: fluent-bit
+   volumes:
+     - ./fluent-bit.conf:/fluent-bit/etc/custom.conf
+   command:
+     - /fluent-bit/bin/fluent-bit
+     - -c
+     - /fluent-bit/etc/custom.conf
+   networks:
+     - observability-net
+   depends_on:
+     - loki
+
+
+ # The app that generates logs and metrics
+ demo-app:
+   build:
+     context: .
+     dockerfile: Dockerfile.demo
+   container_name: demo-app
+   networks:
+     - observability-net
+
+
+# Define a persistent volume for Ollama to store downloaded models
+volumes:
+ ollama_data:

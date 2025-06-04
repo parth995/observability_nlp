@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>Natural Language for Observability</title>
+   <style>
+       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #1c1e21; margin: 0; padding: 20px; }
+       .container { max-width: 800px; margin: 40px auto; padding: 30px; background: #fff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+       h1 { color: #1877f2; text-align: center; }
+       .input-group { display: flex; margin-bottom: 20px; }
+       #question-input { flex-grow: 1; padding: 12px; border: 1px solid #dddfe2; border-radius: 6px 0 0 6px; font-size: 16px; }
+       #ask-button { padding: 12px 20px; border: none; background: #1877f2; color: #fff; font-size: 16px; border-radius: 0 6px 6px 0; cursor: pointer; transition: background 0.3s; }
+       #ask-button:hover { background: #166fe5; }
+       #ask-button:disabled { background: #9dbef2; cursor: not-allowed; }
+       .result-box { margin-top: 20px; padding: 20px; background-color: #f7f8fa; border: 1px solid #dddfe2; border-radius: 6px; }
+       h3 { color: #333; border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; }
+       pre { background: #282c34; color: #abb2bf; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: 'Courier New', Courier, monospace; }
+       .explanation { font-style: italic; color: #606770; margin-bottom: 15px; }
+       .loader { display: none; text-align: center; padding: 20px; }
+       .dot-flashing { position: relative; width: 10px; height: 10px; border-radius: 5px; background-color: #1877f2; color: #1877f2; animation: dotFlashing 1s infinite linear alternate; animation-delay: .5s; }
+       .dot-flashing::before, .dot-flashing::after { content: ''; display: inline-block; position: absolute; top: 0; }
+       .dot-flashing::before { left: -15px; width: 10px; height: 10px; border-radius: 5px; background-color: #1877f2; color: #1877f2; animation: dotFlashing 1s infinite alternate; animation-delay: 0s; }
+       .dot-flashing::after { left: 15px; width: 10px; height: 10px; border-radius: 5px; background-color: #1877f2; color: #1877f2; animation: dotFlashing 1s infinite alternate; animation-delay: 1s; }
+       @keyframes dotFlashing { 0% { background-color: #1877f2; } 50%, 100% { background-color: rgba(24, 119, 242, 0.2); } }
+   </style>
+</head>
+<body>
+
+
+<div class="container">
+   <h1>Natural Language for Observability</h1>
+   <div class="input-group">
+       <input type="text" id="question-input" placeholder="e.g., Show me error logs...">
+       <button id="ask-button">Ask</button>
+   </div>
+   <div class="loader" id="loader">
+       <div class="dot-flashing"></div>
+   </div>
+   <div class="result-box" id="result-box" style="display: none;">
+       <h3>Your Question</h3>
+       <p id="user-question"></p>
+       <h3>Explanation</h3>
+       <p class="explanation" id="explanation"></p>
+       <h3>Generated Query</h3>
+       <pre><code id="generated-query"></code></pre>
+       <h3>Results</h3>
+       <pre><code id="results"></code></pre>
+   </div>
+</div>
+
+
+<script>
+   const askButton = document.getElementById('ask-button');
+   const questionInput = document.getElementById('question-input');
+   const resultBox = document.getElementById('result-box');
+   const loader = document.getElementById('loader');
+
+
+   async function askQuestion() {
+       const question = questionInput.value;
+       if (!question) return;
+
+
+       // UI updates
+       askButton.disabled = true;
+       askButton.innerText = 'Thinking...';
+       resultBox.style.display = 'none';
+       loader.style.display = 'block';
+
+
+       try {
+           const response = await fetch('/ask', {
+               method: 'POST',
+               headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify({ question: question })
+           });
+
+
+           if (!response.ok) {
+               const errorData = await response.json();
+               throw new Error(errorData.error || 'Something went wrong');
+           }
+
+
+           const data = await response.json();
+
+
+           // Populate results
+           document.getElementById('user-question').innerText = data.question;
+           document.getElementById('explanation').innerText = data.explanation;
+           document.getElementById('generated-query').innerText = data.query;
+           document.getElementById('results').innerText = JSON.stringify(data.results, null, 2);
+
+
+           resultBox.style.display = 'block';
+
+
+       } catch (error) {
+           alert('Error: ' + error.message);
+       } finally {
+           // Re-enable UI
+           askButton.disabled = false;
+           askButton.innerText = 'Ask';
+           loader.style.display = 'none';
+       }
+   }
+
+
+   askButton.addEventListener('click', askQuestion);
+   questionInput.addEventListener('keyup', (event) => {
+       if (event.key === 'Enter') {
+           askQuestion();
+       }
+   });
+</script>
+
+
+</body>
+</html>
+
+
+
+
+
+
+
