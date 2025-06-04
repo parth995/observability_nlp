@@ -1,6 +1,3 @@
-# app.py
-
-
 import os
 import requests
 from flask import Flask, render_template, request, jsonify
@@ -11,25 +8,32 @@ app = Flask(__name__)
 
 
 # --- Configuration ---
-# These URLs are for the services running in Docker Compose
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
 
 
-def get_system_prompt():
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+   raise ValueError("GEMINI_API_KEY environment variable not set. Please set it before running.")
+
+
+GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+
+
+
+
+def get_system_prompt(user_question):
    """
-   This is the core of the "magic". We give the LLM very specific instructions.
-   We tell it what it is, what tools it has (Prometheus, Loki), and how to format its response.
+   This prompt is specifically engineered for the Gemini API.
+   It instructs the model on its role, the tools it has, and how to format the response.
    """
-   return """
+   return f"""
    You are an expert at translating natural language questions into observability queries.
    You have access to two tools: Prometheus for metrics and Loki for logs.
    Your goal is to determine which tool to use, generate the correct query, and respond in a specific JSON format.
 
 
-   The user will ask a question in plain English. Based on the question, decide if it's about metrics (like CPU, memory, request counts) or logs (like error messages, application output).
+   Analyze the user's question to decide if it's about metrics (like CPU, memory, request counts) or logs (like error messages, application output).
 
 
    1.  **For Metrics (Prometheus):**
@@ -45,20 +49,25 @@ def get_system_prompt():
        * The logs are streamed with the label `app="demo-app"`.
 
 
-   **IMPORTANT:** You MUST respond with a JSON object. The JSON object should have the following structure:
-   {
+   **IMPORTANT:** You MUST respond with ONLY a valid JSON object. Do not add any other text or markdown formatting. The JSON object should have the following structure:
+   {{
      "tool": "prometheus" or "loki",
      "query": "<The generated PromQL or LogQL query>",
      "explanation": "<A brief, user-friendly explanation of what the query does>"
-   }
+   }}
 
 
    If you cannot determine the correct tool or query, respond with:
-   {
+   {{
      "tool": "none",
      "query": "null",
      "explanation": "I'm sorry, I couldn't understand that question. Please ask about metrics (CPU, memory) or logs (errors, messages)."
-   }
+   }}
+
+
+   ---
+   USER QUESTION: "{user_question}"
+   ---
    """
 
 
@@ -69,6 +78,8 @@ def index():
    return render_template('index.html')
 
 
+
+
 @app.route('/ask', methods=['POST'])
 def ask():
    user_question = request.json.get('question')
@@ -77,26 +88,26 @@ def ask():
 
 
    print(f"User question: {user_question}")
-   llm_response_str = "{}"
+   llm_response_str = "{}"  # Initialize for error logging
 
 
-   # 1. Ask the LLM to translate the question to a query
    try:
-       ollama_payload = {
-           "model": OLLAMA_MODEL,
-           "messages": [
-               { "role": "system", "content": get_system_prompt() },
-               { "role": "user", "content": user_question }
-           ],
-           "format": "json",
-           "stream": False
+       prompt = get_system_prompt(user_question)
+       gemini_payload = {
+           "contents": [{
+               "parts": [{"text": prompt}]
+           }]
        }
-       response = requests.post(f"{OLLAMA_URL}/api/chat", json=ollama_payload, timeout=30)
+
+
+       headers = {'Content-Type': 'application/json'}
+       response = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(gemini_payload), timeout=30)
        response.raise_for_status()
 
 
-       llm_response_str = response.json().get('message', {}).get('content', '{}')
-       llm_response = json.loads(llm_response_str)
+       llm_response_str = response.json()['candidates'][0]['content']['parts'][0]['text']
+       cleaned_json_str = llm_response_str.strip().replace("```json", "").replace("```", "").strip()
+       llm_response = json.loads(cleaned_json_str)
 
 
        tool = llm_response.get("tool")
@@ -108,28 +119,23 @@ def ask():
 
 
    except requests.exceptions.RequestException as e:
-       print(f"Error calling Ollama: {e}")
-       return jsonify({"error": f"Could not connect to the LLM: {e}"}), 500
-   except json.JSONDecodeError as e:
+       print(f"Error calling Gemini API: {e}")
+       return jsonify({"error": f"Could not connect to the Gemini API: {e}"}), 500
+   except (json.JSONDecodeError, KeyError, IndexError) as e:
        print(f"Error decoding LLM JSON response: {e}")
        print(f"Raw response was: {llm_response_str}")
-       return jsonify({"error": "Failed to parse the response from the LLM."}), 500
+       return jsonify({"error": f"Failed to parse the response from the LLM. Raw text: '{llm_response_str}'"}), 500
 
 
-
-
-   # 2. Execute the query against the right tool
    results = None
    if tool == "prometheus":
        try:
            api_url = f"{PROMETHEUS_URL}/api/v1/query"
            params = {'query': query}
-           print(f"Querying Prometheus: {api_url} with query: {query}")
            prom_response = requests.get(api_url, params=params, timeout=10)
            prom_response.raise_for_status()
            results = prom_response.json()
        except requests.exceptions.RequestException as e:
-           print(f"Error querying Prometheus: {e}")
            return jsonify({"error": f"Failed to query Prometheus: {e}"})
 
 
@@ -137,12 +143,10 @@ def ask():
        try:
            api_url = f"{LOKI_URL}/loki/api/v1/query_range"
            params = {'query': query}
-           print(f"Querying Loki: {api_url} with query: {query}")
            loki_response = requests.get(api_url, params=params, timeout=10)
            loki_response.raise_for_status()
            results = loki_response.json()
        except requests.exceptions.RequestException as e:
-           print(f"Error querying Loki: {e}")
            return jsonify({"error": f"Failed to query Loki: {e}"})
 
 
@@ -153,6 +157,8 @@ def ask():
        "explanation": explanation,
        "results": results
    })
+
+
 
 
 if __name__ == '__main__':
